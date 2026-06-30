@@ -3,4 +3,11 @@ if exists('loaded_filefinder')
 endif
 let loaded_filefinder = 1
 
-command! -bar -nargs=? -complete=dir FF call filefinder#start(<f-args>)
+command! -nargs=? -complete=dir FF call filefinder#files_start(<f-args>)
+command! -nargs=? OL call filefinder#oldfiles_start()
+
+autocmd BufRead			* call filefinder#add_oldfile(expand('<abuf>'))
+autocmd BufNewFile		* call filefinder#add_oldfile(expand('<abuf>'))
+autocmd BufWritePost	* call filefinder#add_oldfile(expand('<abuf>'))
+autocmd QuickFixCmdPre	*vimgrep* let g:lock_oldfiles = 1
+autocmd QuickFixCmdPost	*vimgrep* let g:lock_oldfiles = 0

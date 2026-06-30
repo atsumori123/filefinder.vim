@@ -4,6 +4,7 @@ set cpo&vim
 
 let s:pattern = ""
 let s:start_dir = ""
+let s:filefinder = 1
 
 "---------------------------------------------------------------
 " キャッシュディレクトリの取得
@@ -28,6 +29,33 @@ function! s:escape_filename(file) abort
 		let esc_filename_chars = ' *?[{`$%#"|!<>();&' . "'\t\n"
 		return escape(a:file, esc_filename_chars)
 	endif
+endfunction
+
+"---------------------------------------------------------------
+" get git root
+"---------------------------------------------------------------
+function! s:get_git_root(dir) abort
+	let git_root = fnamemodify(finddir('.git', a:dir . ';'), ':h')
+	return empty(git_root) ? a:dir : git_root
+endfunction
+
+"---------------------------------------------------------------
+" load oldfiles from oldfiles
+"---------------------------------------------------------------
+function! s:load_oldfiles() abort
+	let s:OldFiles = []
+
+	for f in v:oldfiles
+		if len(s:OldFiles) >= 50 | break | endif
+
+		" Convert to full path filename. check readable
+		let file = expand(f)
+		if !filereadable(file) | continue | endif
+
+		" Add to list
+		let file = fnameescape(file)
+		call add(s:OldFiles, file)
+	endfor
 endfunction
 
 "---------------------------------------------------------------
@@ -121,8 +149,13 @@ function! s:on_select(winid, result) abort
 	" 選択項目を取得
 	let file = trim(win_execute(a:winid, 'echo getline(".")'))
 
-	" フルパスに変換
-	let filepath = printf("%s%s%s", s:start_dir, has('unix') ? '/' : '\\', s:escape_filename(file))
+	if s:filefinder
+		" フルパスに変換
+		let filepath = printf("%s%s%s", s:start_dir, has('unix') ? '/' : '\\', s:escape_filename(file))
+	else
+		" ファイルパスの部分を抽出
+		let filepath = matchstr(file, '(\zs.*\ze)')
+	endif
 
 	let winnum = bufwinnr('^' . filepath . '$')
 	if winnum != -1
@@ -150,11 +183,14 @@ function! s:update_text(winid, old_pattern, pattern) abort
 	" タイトル更新
 	call popup_setoptions(a:winid, {'title' : printf(" [%d] > %s ", len(files), a:pattern)})
 
-	" ハイライト再設定
-	call matchadd('Title', s:pattern, 10, -1, {'window': a:winid})
-
 	" ポップアップメニューの内容を更新
 	call popup_settext(a:winid, files)
+
+	" ハイライト再設定
+	if !s:filefinder
+		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:winid})
+	endif
+	call matchadd('Title', s:pattern, 10, -1, {'window': a:winid})
 endfunction
 
 "---------------------------------------------------------------
@@ -174,6 +210,11 @@ function! s:popup_filter(winid, key) abort
 
 	elseif a:key ==# "\<c-k>"
 		call win_execute(a:winid, 'normal! k')
+		return 1
+
+	elseif a:key ==# "\<c-u>"
+		let s:pattern = ""
+		call s:update_text(a:winid, "dummy", s:pattern)
 		return 1
 
 	elseif a:key ==# "\<F5>"
@@ -210,36 +251,71 @@ function! s:open_popup() abort
 			\ 'filter':			function('s:popup_filter')
 			\ }
 
-	const winid = popup_menu(s:FILES, opts)
+	return popup_menu(s:FILES, opts)
 endfunction
 
 "---------------------------------------------------------------
 " filefinder#start
 "---------------------------------------------------------------
-function! filefinder#start(...) abort
+function! filefinder#files_start(...) abort
 	let s:pattern = ""
-	let start_dir = resolve(get(a:000, 0, ""))
-	if empty(start_dir)
-		let git_root = filefinder#git#get_git_root()
-		let start_dir = empty(git_root) ? getcwd() : git_root[0]
-	endif
+	let s:filefinder = 1
 
-	if $MSYSTEM =~# 'MINGW'
-		let s:start_dir = start_dir
-	else
-		let cwd = getcwd()
-		execute "lcd " start_dir
-		let s:start_dir = getcwd()
-		execute "lcd " cwd
-	endif
+	" 開始ディレクトリ(引数指定 / git root / ファイルパス)
+	let s:start_dir = resolve(get(a:000, 0, s:get_git_root(expand('%:h:p'))))
 
 	" ファイル一覧の取得
 	call s:get_files(s:start_dir, 0)
 
-	call s:open_popup()
+	" ポップアップウィンドウを表示
+	let winid = s:open_popup()
 endfunction
 
-" restore 'cpo'
+"---------------------------------------------------------------
+" filefinder#start
+"---------------------------------------------------------------
+function! filefinder#oldfiles_start() abort
+	let s:pattern = ""
+	let s:filefinder = 0
+
+	" s:OldFilesが無い(ファイル履歴未ロード)の場合は、oldfilesから履歴を取得する
+	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
+
+	" ファイル履歴の取得
+	let s:FILES = map(copy(s:OldFiles), 'fnamemodify(v:val, ":t")."  (" . v:val . ")"')
+
+	" ポップアップウィンドウを表示
+	let winid = s:open_popup()
+
+	" ファイル名をハイライト
+	call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': winid})
+endfunction
+
+"---------------------------------------------------------------
+" add to s:OldFiles
+"---------------------------------------------------------------
+function! filefinder#add_oldfile(bufnr) abort
+	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
+
+	" Get the full path to the filename
+	let file = fnamemodify(bufname(a:bufnr + 0), ':p')
+
+	" 以下に該当する場合は履歴に追加しない
+	" プレビュー、ファイル名が空、特殊バッファ、リードオンリー
+	if &previewwindow || empty(file) || !empty(&buftype) || !filereadable(file)
+		return
+	endif
+
+	" Remove the new file name from the existing list (if already present)
+	call filter(s:OldFiles, 'v:val !=# file')
+
+	" 先頭に追加
+	call insert(s:OldFiles, file, 0)
+
+	" 履歴の最大数に丸める
+	let s:OldFiles = s:OldFiles[:50-1]
+endfunction
+
 let &cpo = s:cpo_save
 unlet s:cpo_save
 
