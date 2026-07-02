@@ -11,7 +11,7 @@ function! s:init() abort
 	let s:filefinder = 0
 
 	" 区切り文字をOS判定で決定
-	let s:sep = has('win32') || has('win64') ? '\\' : '/'
+	let s:sep = has('win32') || has('win64') ? "\\" : "/"
 endfunction
 
 "---------------------------------------------------------------
@@ -44,7 +44,7 @@ endfunction
 "---------------------------------------------------------------
 function! s:get_git_root(dir) abort
 	let git_root = finddir('.git', a:dir . ';')
-	return empty(git_root) ? a:dir : fnamemodify(expand(git_root, ':p'), ':p:h:h')
+	return empty(git_root) ? "" : fnamemodify(expand(git_root, ':p'), ':p:h:h')
 endfunction
 
 "---------------------------------------------------------------
@@ -101,7 +101,9 @@ function! s:get_file_list_from_directory(start_dir) abort
 	echohl Search | echomsg ">>> file searching (" . a:start_dir . ")>>>" | echohl None
 
 	" globpathでディレクトリ以下を再帰的に検索してファイルを抽出
+	execute "lcd " a:start_dir
 	let list = globpath(a:start_dir, '**/*', 0, 1)
+	execute "lcd -"
 
 	" 除外ディレクトリを正規表現で結合
 	let ignore_pattern = join(ignore_dirs, s:sep . '\|')
@@ -135,7 +137,7 @@ function! s:list_cache_file(winid) abort
 	    " 先頭のドライブ名の % を : に戻す
 		let s = substitute(v, '^\a\zs%', ':', '')
 		" 残りの % を \ に戻す
-    	let s = substitute(s, '%', '\\', 'g')
+    	let s = substitute(s, '%', s:sep, 'g')
 
 		call add(s:FILES, s)
 	endfor
@@ -165,21 +167,16 @@ endfunction
 function! s:get_dir_from_higher(start_dir) abort
 	let cache_dir = s:get_cashe_directory()
 
-	" 開始ディレクトリは親のディレクトリから
-	let dir = fnamemodify(a:start_dir, ':h')
-	let start_dir = a:start_dir
-	let prev = ''
-	while dir !=# prev
+	let parts = split(a:start_dir, s:sep)
+	for i in range(0, len(parts) - 1, 1)
+		let dir = join(parts[:i], s:sep)
 		let cache_file = substitute(dir, '\([\/]\|^\a\zs:\)', '%', 'g').'.txt'
 		if filereadable(cache_dir . s:sep . cache_file)
-			let start_dir = dir
-			break
+			return dir
 		endif
-		let prev = dir
-		let dir = fnamemodify(dir, ':h')
-	endwhile
+	endfor
 
-	return start_dir
+	return a:start_dir
 endfunction
 
 "---------------------------------------------------------------
@@ -225,7 +222,7 @@ function! s:on_select(winid, result) abort
 	else
 		" キャッシュファイルの切り替え
 		let start_dir = substitute(file, '%', s:sep, 'g')[:-5]
-		if isdirectory(start_dir) | call filefinder#files_start(0, start_dir) | endif
+		if isdirectory(start_dir) | call filefinder#files_start(start_dir) | endif
 		return
 	endif
 
@@ -242,28 +239,23 @@ endfunction
 "-------------------------------------------------------
 function! s:update_text(winid, old_pattern, pattern) abort
 	let [old_len, new_len] = [len(a:old_pattern), len(a:pattern)]
-	let case_ignore = a:pattern =~# '[A-Z]' ? 0 : 1
 
 	" 変化なしの場合はスキップ
 	if old_len == new_len | return | endif
 
-	" フィルタリングの条件式を作成
-	let [cond, pattern] = ["", split(a:pattern, "|")]
-	for v in pattern
-		let cond .= printf("%sv:val %s '%s'", (len(cond) ? " && " : ""), (v =~# '[A-Z]' ? '=~#' : '=~?'), escape(v, '.'))
-	endfor
-
 	" ハイライト全クリア
 	call clearmatches(a:winid)
 
-	" フィルタリングしてハイライト
+	" ファイルリスト
 	let files = copy(old_len < new_len ? getbufline(winbufnr(a:winid), 1, '$') : s:FILES)
-	if s:filefinder == 2
-		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:winid})
-	endif
+
+	" フィルタリングパターンが指定されている場合
 	if len(a:pattern)
+		let cond = ""
+		for v in split(a:pattern, "|")
+			let cond .= printf("%sv:val %s '%s'", (len(cond) ? " && " : ""), (v =~# '[A-Z]' ? '=~#' : '=~?'), escape(v, '.'))
+		endfor
 		call filter(files, cond)
-		call matchadd('Title', (case_ignore ? '\c' : '') . join(pattern, '\|'), 10, -1, {'window': a:winid})
 	endif
 
 	" タイトル更新
@@ -271,6 +263,18 @@ function! s:update_text(winid, old_pattern, pattern) abort
 	
 	" ポップアップメニューの内容を更新
 	call popup_settext(a:winid, files)
+
+	" oldfiles用ハイライト
+	if s:filefinder == 2
+		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:winid})
+	endif
+
+	"フィルタリングパターンのハイライト
+	if len(a:pattern)
+		for v in split(a:pattern, "|")
+			call matchadd('Title', (v =~# '[A-Z]' ? '' : '\c') . v, 10, -1, {'window': a:winid})
+		endfor
+	endif
 endfunction
 
 "---------------------------------------------------------------
@@ -282,10 +286,6 @@ function! s:popup_filter(winid, key) abort
 	if a:key ==# "\<BS>" || a:key =~ '^[a-z0-9_._\|\ ]\+$'
 		let s:pattern = a:key ==# "\<BS>" ? s:pattern[:-2] : s:pattern . a:key
 		call s:update_text(a:winid, old_pattern, s:pattern)
-		return 1
-
-	elseif a:key ==# "\<c-l>"
-		call popup_close(a:winid, 1)
 		return 1
 
 	elseif a:key ==# "\<c-j>"
@@ -309,7 +309,8 @@ function! s:popup_filter(winid, key) abort
 		call s:update_text(a:winid, "dummy", s:pattern)
 		return 1
 
-	elseif a:key ==# "\<F4>"
+	elseif a:key ==# "\<c-l>"
+		if s:filefinder != 1 | return 1 | endif
 		let s:pattern = ""
 		call s:list_cache_file(a:winid)
 		call s:update_text(a:winid, "dummy", "")
@@ -367,14 +368,13 @@ function! filefinder#files_start(...) abort
 	call s:init()
 	let s:filefinder = 1
 
-	" より上位のキャッシュを使用するか
-	let higher = resolve(get(a:000, 0, 1))
-
-	" 開始ディレクトリ(引数指定 / git root / ファイルのディレクトリ)
-	let start_dir = resolve(get(a:000, 1, s:get_git_root(expand('%:p:h'))))
-
-	" より上位のキャッシュファイルが存在するディレクトリを取得する
-	let s:start_dir = higher ? s:get_dir_from_higher(start_dir) : start_dir
+	" 開始ディレクトリ
+	let s:start_dir = resolve(get(a:000, 0, s:get_dir_from_higher(s:get_git_root(expand('%:p:h')))))
+	if empty(s:start_dir) || !isdirectory(s:start_dir)
+		echohl Error | echomsg "Could not set the starting directory." | echohl None
+		return
+	endif
+	let s:start_dir = substitute(s:start_dir, '[\/]$', '', '')
 
 	" ファイル一覧の取得
 	call s:get_files(s:start_dir, 0)
