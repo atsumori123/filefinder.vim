@@ -3,8 +3,8 @@ if exists('loaded_filefinder')
 endif
 let loaded_filefinder = 1
 
-command! -nargs=? -complete=dir FF call filefinder#files_start(<f-args>)
-command! -nargs=? OL call filefinder#oldfiles_start()
+command! -nargs=? -complete=dir FF call filefinder#start_files(<f-args>)
+command! -nargs=? OL call filefinder#start_oldfiles()
 
 autocmd BufRead			* call filefinder#add_oldfile(expand('<abuf>'))
 "autocmd BufNewFile		* call filefinder#add_oldfile(expand('<abuf>'))

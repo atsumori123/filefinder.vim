@@ -11,7 +11,7 @@ function! s:init() abort
 	let s:filefinder = 0
 
 	" 区切り文字をOS判定で決定
-	let s:sep = has('win32') || has('win64') ? "\\" : "/"
+	let s:sep = has('win32') || has('win64') && !&shellslash ? "\\" : "/"
 endfunction
 
 "---------------------------------------------------------------
@@ -105,7 +105,7 @@ function! s:get_file_list_from_directory(start_dir) abort
 	let list = globpath(a:start_dir, '**/*', 0, 1)
 	execute "lcd -"
 
-	" 除外ディレクトリを正規表現で結合
+	" 除外ディレクトリを正規表現で結合してフィルタリング
 	let ignore_pattern = join(ignore_dirs, s:sep . '\|')
 	call filter(list, 'v:val !~# ignore_pattern')
 
@@ -126,11 +126,11 @@ function! s:get_file_list_from_directory(start_dir) abort
 endfunction
 
 "---------------------------------------------------------------
-" キャッシュファイルをリスト表示
+" キャッシュファイルの一覧を取得
 "---------------------------------------------------------------
-function! s:list_cache_file(winid) abort
+function! s:listup_cache_file(winid) abort
 	let s:filefinder = 3
-	let s:start_dir = "cachefiles"
+	let s:start_dir = "cache files"
 
 	let s:FILES = []
 	for v in readdir(s:get_cashe_directory())
@@ -164,7 +164,7 @@ endfunction
 "---------------------------------------------------------------
 " より上位のキャッシュファイルが存在するディレクトリを取得する
 "---------------------------------------------------------------
-function! s:get_dir_from_higher(start_dir) abort
+function! s:get_higher_level_directory(start_dir) abort
 	let cache_dir = s:get_cashe_directory()
 
 	let parts = split(a:start_dir, s:sep)
@@ -183,20 +183,21 @@ endfunction
 " ファイル一覧の取得
 "---------------------------------------------------------------
 function! s:get_files(start_dir, force) abort
-	" キャッシュファイル名
+	" 読み込みキャッシュファイルのパス
 	let cache_dir = s:get_cashe_directory()
 	let cache_file = cache_dir . substitute(a:start_dir, '\([\/]\|^\a\zs:\)', '%', 'g').'.txt'
 
 	if !filereadable(cache_file) || a:force
-		" Get the list of files
+		" 指定ディレクトリ以下を再帰的に検索してファイル一覧を作成する
 		let s:FILES = s:get_file_list_from_directory(a:start_dir)
 
-		" キャッシュファイルを作成。キャッシュディレクトリが無い場合は作成する
+		" キャッシュディレクトリに保存。キャッシュディレクトリが無い場合は作成する
 		if exists('*mkdir') && !isdirectory(cache_dir)
 			silent! call mkdir(cache_dir, 'p')
 		endif
 		silent! call writefile(s:FILES, cache_file)
 	else
+		" キャッシュファイルから読み込む
 		let s:FILES = readfile(cache_file)
 	endif
 endfunction
@@ -213,16 +214,16 @@ function! s:on_select(winid, result) abort
 	" 選択項目を取得
 	let file = trim(win_execute(a:winid, 'echo getline(".")'))
 
-	if s:filefinder == 1
-		" フルパスに変換
+	if s:filefinder == 1		" filefinderの場合
+		" 相対パスを絶対パスに変換
 		let filepath = printf("%s%s%s", s:start_dir, s:sep, s:escape_filename(file))
-	elseif s:filefinder == 2
-		" ファイルパスの部分を抽出
+	elseif s:filefinder == 2	" oldfilesの場合
+		" 絶対パスの部分を抽出
 		let filepath = matchstr(file, '(\zs.*\ze)')
-	else
-		" キャッシュファイルの切り替え
+	else						" キャッシュファイル表示の場合
+		" 選択キャッシュファイルに切り替え
 		let start_dir = substitute(file, '%', s:sep, 'g')[:-5]
-		if isdirectory(start_dir) | call filefinder#files_start(start_dir) | endif
+		if isdirectory(start_dir) | call filefinder#start_files(start_dir) | endif
 		return
 	endif
 
@@ -240,16 +241,16 @@ endfunction
 function! s:update_text(winid, old_pattern, pattern) abort
 	let [old_len, new_len] = [len(a:old_pattern), len(a:pattern)]
 
-	" 変化なしの場合はスキップ
+	" フィルタリングパターンに変化が無い場合は処理なし
 	if old_len == new_len | return | endif
 
-	" ハイライト全クリア
+	" ハイライトを全クリア
 	call clearmatches(a:winid)
 
-	" ファイルリスト
+	" ファイルリストを取得
 	let files = copy(old_len < new_len ? getbufline(winbufnr(a:winid), 1, '$') : s:FILES)
 
-	" フィルタリングパターンが指定されている場合
+	" フィルタリングの条件式を作成
 	if len(a:pattern)
 		let cond = ""
 		for v in split(a:pattern, "|")
@@ -258,10 +259,10 @@ function! s:update_text(winid, old_pattern, pattern) abort
 		call filter(files, cond)
 	endif
 
-	" タイトル更新
+	" タイトルの更新
 	call popup_setoptions(a:winid, {'title' : printf(" > %s [%s:%d] ", a:pattern, s:start_dir, len(files))})
 	
-	" ポップアップメニューの内容を更新
+	" 表示の更新
 	call popup_settext(a:winid, files)
 
 	" oldfiles用ハイライト
@@ -269,7 +270,7 @@ function! s:update_text(winid, old_pattern, pattern) abort
 		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:winid})
 	endif
 
-	"フィルタリングパターンのハイライト
+	" フィルタリングパターンをハイライト
 	if len(a:pattern)
 		for v in split(a:pattern, "|")
 			call matchadd('Title', (v =~# '[A-Z]' ? '' : '\c') . v, 10, -1, {'window': a:winid})
@@ -312,7 +313,7 @@ function! s:popup_filter(winid, key) abort
 	elseif a:key ==# "\<c-l>"
 		if s:filefinder != 1 | return 1 | endif
 		let s:pattern = ""
-		call s:list_cache_file(a:winid)
+		call s:listup_cache_file(a:winid)
 		call s:update_text(a:winid, "dummy", "")
 		return 1
 
@@ -320,7 +321,7 @@ function! s:popup_filter(winid, key) abort
 		if s:filefinder != 3 | return 1 | endif
 		let s:pattern = ""
 		call s:delete_cache_file(a:winid)
-		call s:list_cache_file(a:winid)
+		call s:listup_cache_file(a:winid)
 		call s:update_text(a:winid, "dummy", "")
 		return 1
 
@@ -364,43 +365,45 @@ endfunction
 "---------------------------------------------------------------
 " filefinder#start
 "---------------------------------------------------------------
-function! filefinder#files_start(...) abort
+function! filefinder#start_files(...) abort
 	call s:init()
 	let s:filefinder = 1
 
-	" 開始ディレクトリ
-	let s:start_dir = resolve(get(a:000, 0, s:get_dir_from_higher(s:get_git_root(expand('%:p:h')))))
-	if empty(s:start_dir) || !isdirectory(s:start_dir)
+	" 開始ディレクトリを決定する
+	let start_dir = resolve(get(a:000, 0, s:get_higher_level_directory(s:get_git_root(expand('%:p:h')))))
+	if empty(start_dir) || !isdirectory(start_dir)
 		echohl Error | echomsg "Could not set the starting directory." | echohl None
 		return
 	endif
-	let s:start_dir = substitute(s:start_dir, '[\/]$', '', '')
 
-	" ファイル一覧の取得
+	" 末尾の区切り文字を削除
+	let s:start_dir = substitute(start_dir, '[\/]$', '', '')
+
+	" ファイル一覧取得
 	call s:get_files(s:start_dir, 0)
 
-	" ポップアップウィンドウを表示
+	" ポップアップウィンドウで表示
 	let winid = s:open_popup()
 endfunction
 
 "---------------------------------------------------------------
 " filefinder#start
 "---------------------------------------------------------------
-function! filefinder#oldfiles_start() abort
+function! filefinder#start_oldfiles() abort
 	call s:init()
 	let s:filefinder = 2
 	let s:start_dir = "oldfiles"
 
-	" s:OldFilesが無い(ファイル履歴未ロード)の場合は、oldfilesから履歴を取得する
+	" ファイル履歴が未ロードでの場合は、vimのoldfilesから取得する
 	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
 
-	" ファイル履歴の取得
+	" 表示形式に変換
 	let s:FILES = map(copy(s:OldFiles), 'fnamemodify(v:val, ":t")."  (" . v:val . ")"')
 
-	" ポップアップウィンドウを表示
+	" ポップアップウィンドウで表示
 	let winid = s:open_popup()
 
-	" ファイル名をハイライト
+	" 各行先頭のファイル名の部分をハイライト
 	call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': winid})
 endfunction
 
@@ -411,7 +414,7 @@ function! filefinder#add_oldfile(bufnr) abort
 	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
 
 	" Get the full path to the filename
-	let file = fnamemodify(bufname(a:bufnr + 0), ':p')
+	let file = fnamemodify(bufname(a:bufnr), ':p')
 
 	" 以下に該当する場合は履歴に追加しない
 	" プレビュー、ファイル名が空、特殊バッファ、リードオンリー
@@ -419,16 +422,15 @@ function! filefinder#add_oldfile(bufnr) abort
 		return
 	endif
 
-	" Remove the new file name from the existing list (if already present)
+	" 既に履歴に存在する場合は一旦削除する
 	call filter(s:OldFiles, 'v:val !=# file')
 
-	" 先頭に追加
+	" 履歴の先頭に追加
 	call insert(s:OldFiles, file, 0)
 
-	" 履歴の最大数に丸める
+	" 履歴の数を上限に丸める
 	let s:OldFiles = s:OldFiles[:50-1]
 endfunction
 
 let &cpo = s:cpo_save
 unlet s:cpo_save
-
