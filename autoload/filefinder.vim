@@ -10,15 +10,14 @@ function! s:init() abort
 	let s:start_dir = ""
 	let s:filefinder = 0
 
-	" 区切り文字をOS判定で決定
-	let s:sep = has('win32') || has('win64') && !&shellslash ? "\\" : "/"
+	set shellslash
 endfunction
 
 "---------------------------------------------------------------
 " キャッシュディレクトリの取得
 "---------------------------------------------------------------
 function! s:get_cashe_directory() abort
-	if has('unix') || has('macunix')
+	if has('unix') || has('macuni')
 		return $HOME . '/vim_filefinder/'
 	elseif has('win32') && $USERPROFILE != ''
 		return $USERPROFILE . '\vim_filefinder\'
@@ -102,11 +101,15 @@ function! s:get_file_list_from_directory(start_dir) abort
 
 	" globpathでディレクトリ以下を再帰的に検索してファイルを抽出
 	execute "lcd " a:start_dir
-	let list = globpath(a:start_dir, '**/*', 0, 1)
+	if s:hidden_file
+		let list = split(globpath(a:start_dir, '**/*', 1), "\n") + split(globpath(a:start_dir, '**/.*', 1), "\n")
+	else
+		let list = globpath(a:start_dir, '**/*', 0, 1)
+	endif
 	execute "lcd -"
 
 	" 除外ディレクトリを正規表現で結合してフィルタリング
-	let ignore_pattern = join(ignore_dirs, s:sep . '\|')
+	let ignore_pattern = join(ignore_dirs, '/' . '\|')
 	call filter(list, 'v:val !~# ignore_pattern')
 
 	" ディレクトリを除外してファイルのみにする
@@ -117,8 +120,8 @@ function! s:get_file_list_from_directory(start_dir) abort
 	call filter(list, 'v:val !~# ignore_pattern')
 
 	" 相対パスにする
-	let dir = escape(a:start_dir, '\') . s:sep
-	call map(list, 'substitute(v:val, dir, "", "")')
+	let len = len(a:start_dir) + 1
+	call map(list, 'v:val[len:]')
 
 	redraw | echo ""
 
@@ -128,7 +131,7 @@ endfunction
 "---------------------------------------------------------------
 " キャッシュファイルの一覧を取得
 "---------------------------------------------------------------
-function! s:listup_cache_file(winid) abort
+function! s:listup_cache_file() abort
 	let s:filefinder = 3
 	let s:start_dir = "cache files"
 
@@ -136,8 +139,8 @@ function! s:listup_cache_file(winid) abort
 	for v in readdir(s:get_cashe_directory())
 	    " 先頭のドライブ名の % を : に戻す
 		let s = substitute(v, '^\a\zs%', ':', '')
-		" 残りの % を \ に戻す
-    	let s = substitute(s, '%', s:sep, 'g')
+		" 残りの % を / に戻す
+    	let s = substitute(s, '%', '/', 'g')
 
 		call add(s:FILES, s)
 	endfor
@@ -154,7 +157,7 @@ function! s:delete_cache_file(winid) abort
 	let cache_file = substitute(file, '\([\/]\|^\a\zs:\)', '%', 'g')
 
 	" 削除
-	if delete(s:get_cashe_directory() . s:sep . cache_file, '') < 0
+	if delete(s:get_cashe_directory() . '/' . cache_file, '') < 0
 		echo "\rCannot delete file: " . file
 	else
 		echo "\rDeleted file: ". file
@@ -167,11 +170,11 @@ endfunction
 function! s:get_higher_level_directory(start_dir) abort
 	let cache_dir = s:get_cashe_directory()
 
-	let parts = split(a:start_dir, s:sep)
+	let parts = split(a:start_dir, '/')
 	for i in range(0, len(parts) - 1, 1)
-		let dir = join(parts[:i], s:sep)
+		let dir = join(parts[:i], '/')
 		let cache_file = substitute(dir, '\([\/]\|^\a\zs:\)', '%', 'g').'.txt'
-		if filereadable(cache_dir . s:sep . cache_file)
+		if filereadable(cache_dir . '/' . cache_file)
 			return dir
 		endif
 	endfor
@@ -216,13 +219,13 @@ function! s:on_select(winid, result) abort
 
 	if s:filefinder == 1		" filefinderの場合
 		" 相対パスを絶対パスに変換
-		let filepath = printf("%s%s%s", s:start_dir, s:sep, s:escape_filename(file))
+		let filepath = printf("%s/%s", s:start_dir, s:escape_filename(file))
 	elseif s:filefinder == 2	" oldfilesの場合
 		" 絶対パスの部分を抽出
 		let filepath = matchstr(file, '(\zs.*\ze)')
 	else						" キャッシュファイル表示の場合
 		" 選択キャッシュファイルに切り替え
-		let start_dir = substitute(file, '%', s:sep, 'g')[:-5]
+		let start_dir = substitute(file, '%', '/', 'g')[:-5]
 		if isdirectory(start_dir) | call filefinder#start_files(start_dir) | endif
 		return
 	endif
@@ -260,7 +263,7 @@ function! s:update_text(winid, old_pattern, pattern) abort
 	endif
 
 	" タイトルの更新
-	call popup_setoptions(a:winid, {'title' : printf(" > %s [%s:%d] ", a:pattern, s:start_dir, len(files))})
+	call popup_setoptions(a:winid, {'title' : printf(" > %s%s[%s:%d] ", a:pattern, len(a:pattern) ? " " : "", s:start_dir, len(files))})
 	
 	" 表示の更新
 	call popup_settext(a:winid, files)
@@ -313,7 +316,7 @@ function! s:popup_filter(winid, key) abort
 	elseif a:key ==# "\<c-l>"
 		if s:filefinder != 1 | return 1 | endif
 		let s:pattern = ""
-		call s:listup_cache_file(a:winid)
+		call s:listup_cache_file()
 		call s:update_text(a:winid, "dummy", "")
 		return 1
 
@@ -321,12 +324,13 @@ function! s:popup_filter(winid, key) abort
 		if s:filefinder != 3 | return 1 | endif
 		let s:pattern = ""
 		call s:delete_cache_file(a:winid)
-		call s:listup_cache_file(a:winid)
+		call s:listup_cache_file()
 		call s:update_text(a:winid, "dummy", "")
 		return 1
 
-	elseif a:key ==# "\<F5>"
+	elseif a:key ==# "\<F5>" || a:key ==# "\<F6>"
 		let s:pattern = ""
+		let s:hidden_file = a:key ==# "\<F5>" ? 0 : 1
 		call s:get_files(s:start_dir, 1)
 		call s:update_text(a:winid, "dummy", s:pattern)
 		return 1
@@ -370,9 +374,26 @@ function! filefinder#start_files(...) abort
 	let s:filefinder = 1
 
 	" 開始ディレクトリを決定する
-	let start_dir = resolve(get(a:000, 0, s:get_higher_level_directory(s:get_git_root(expand('%:p:h')))))
+	if len(a:000) && !empty(a:000[0])
+		" 引数を空白で分割する
+		let args = split(a:000[0], '\s\+', 0)
+		" 隠しファイル指定有無の判定
+		let s:hidden_file = (index(args, '.') != -1) ? 1 : 0
+		" 隠しファイル指定を除外
+		call filter(args, 'v:val !=# "."')
+		" ディレクトリ指定があればそれを使い、なければ Git のルートを探す
+		let start_dir = resolve(empty(args) ? s:get_higher_level_directory(s:get_git_root(expand('%:p:h'))) : args[0])
+	else
+		" 引数がない場合のデフォルト処理
+		let s:hidden_file = 0
+		let start_dir = s:get_higher_level_directory(resolve(s:get_git_root(expand('%:p:h'))))
+	endif
+
 	if empty(start_dir) || !isdirectory(start_dir)
-		echohl Error | echomsg "Could not set the starting directory." | echohl None
+		" キャッシュファイルが存在しない場合は選択画面を表示する
+		echohl Error | echomsg "Could not set the starting directory. Select a cache file." | echohl None
+		call s:listup_cache_file()
+		let winid = s:open_popup()
 		return
 	endif
 
