@@ -99,12 +99,15 @@ function! s:get_file_list_from_directory(start_dir) abort
 
 	echohl Search | echomsg ">>> file searching (" . a:start_dir . ")>>>" | echohl None
 
-	" globpathでディレクトリ以下を再帰的に検索してファイルを抽出
 	execute "lcd " a:start_dir
-	if s:hidden_file
-		let list = split(globpath(a:start_dir, '**/*', 1), "\n") + split(globpath(a:start_dir, '**/.*', 1), "\n")
+	if executable('git') && !empty(finddir('.git', a:start_dir . ';'))
+		" gitコマンドでファイル検索
+		let list = filefinder#job#run_job(['git', '-C', a:start_dir, 'ls-files', '--others', '--exclude-standard', '--cached'])
 	else
-		let list = globpath(a:start_dir, '**/*', 0, 1)
+		" vimのglobpathで検索
+		let list = split(globpath(a:start_dir, '**/*', 1), "\n") + split(globpath(a:start_dir, '**/.*', 1), "\n")
+		" 相対パスにする
+		call map(list, 'fnamemodify(v:val, ":.")')
 	endif
 	execute "lcd -"
 
@@ -118,10 +121,6 @@ function! s:get_file_list_from_directory(start_dir) abort
 	" 除外ファイルでフィルタリング
 	let ignore_pattern = join(ignore_files, '\|')
 	call filter(list, 'v:val !~# ignore_pattern')
-
-	" 相対パスにする
-	let len = len(a:start_dir) + 1
-	call map(list, 'v:val[len:]')
 
 	redraw | echo ""
 
@@ -375,14 +374,7 @@ function! filefinder#start_files(...) abort
 
 	" 開始ディレクトリを決定する
 	if len(a:000) && !empty(a:000[0])
-		" 引数を空白で分割する
-		let args = split(a:000[0], '\s\+', 0)
-		" 隠しファイル指定有無の判定
-		let s:hidden_file = (index(args, '.') != -1) ? 1 : 0
-		" 隠しファイル指定を除外
-		call filter(args, 'v:val !=# "."')
-		" ディレクトリ指定があればそれを使い、なければ Git のルートを探す
-		let start_dir = resolve(empty(args) ? s:get_higher_level_directory(s:get_git_root(expand('%:p:h'))) : args[0])
+		let start_dir = resolve(a:000[0])
 	else
 		" 引数がない場合のデフォルト処理
 		let s:hidden_file = 0
