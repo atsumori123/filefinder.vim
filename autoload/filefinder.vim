@@ -103,9 +103,13 @@ function! s:get_file_list_from_directory(start_dir) abort
 	if executable('git') && !empty(finddir('.git', a:start_dir . ';'))
 		" gitコマンドでファイル検索
 		let list = filefinder#job#run_job(['git', '-C', a:start_dir, 'ls-files', '--others', '--exclude-standard', '--cached'])
+		" ディレクトリを除外してファイルのみにする
+		call filter(list, '!isdirectory(a:start_dir . '/' . v:val)')
 	else
 		" vimのglobpathで検索
 		let list = split(globpath(a:start_dir, '**/*', 1), "\n") + split(globpath(a:start_dir, '**/.*', 1), "\n")
+		" ディレクトリを除外してファイルのみにする
+		call filter(list, '!isdirectory(v:val)')
 		" 相対パスにする
 		call map(list, 'fnamemodify(v:val, ":.")')
 	endif
@@ -114,9 +118,6 @@ function! s:get_file_list_from_directory(start_dir) abort
 	" 除外ディレクトリを正規表現で結合してフィルタリング
 	let ignore_pattern = join(ignore_dirs, '/' . '\|')
 	call filter(list, 'v:val !~# ignore_pattern')
-
-	" ディレクトリを除外してファイルのみにする
-	call filter(list, '!isdirectory(v:val)')
 
 	" 除外ファイルでフィルタリング
 	let ignore_pattern = join(ignore_files, '\|')
