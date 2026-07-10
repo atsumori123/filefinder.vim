@@ -7,8 +7,10 @@ set cpo&vim
 "---------------------------------------------------------------
 function! s:init() abort
 	let s:pattern = ""
+	let s:old_pattern = ""
 	let s:start_dir = ""
 	let s:filefinder = 0
+	let s:timer_id = 0
 
 	set shellslash
 endfunction
@@ -241,11 +243,11 @@ endfunction
 "-------------------------------------------------------
 " Update popup menu
 "-------------------------------------------------------
-function! s:update_text(winid, old_pattern, pattern) abort
-	let [old_len, new_len] = [len(a:old_pattern), len(a:pattern)]
+function! s:update_text(winid, pattern, force) abort
+	let [old_len, new_len] = [len(s:old_pattern), len(a:pattern)]
 
 	" フィルタリングパターンに変化が無い場合は処理なし
-	if old_len == new_len | return | endif
+	if (old_len == new_len) && !a:force | return | endif
 
 	" ハイライトを全クリア
 	call clearmatches(a:winid)
@@ -279,63 +281,72 @@ function! s:update_text(winid, old_pattern, pattern) abort
 			call matchadd('Title', (v =~# '[A-Z]' ? '' : '\c') . v, 10, -1, {'window': a:winid})
 		endfor
 	endif
+
+	let s:old_pattern = a:pattern
+endfunction
+
+"---------------------------------------------------------------
+" debounce update
+"---------------------------------------------------------------
+function! s:debounce_update(winid, pattern, force)
+	" タイマーが動いていたら停止
+	if s:timer_id != 0 | call timer_stop(s:timer_id) | endif
+	" 150ms 入力が止まったら実行
+	let s:timer_id = timer_start(150, {-> s:update_text(a:winid, a:pattern, a:force)})
 endfunction
 
 "---------------------------------------------------------------
 " popup filter
 "---------------------------------------------------------------
 function! s:popup_filter(winid, key) abort
-	let old_pattern = s:pattern
-
-	if a:key ==# "\<BS>" || a:key =~ '^[a-z0-9_._\|\ ]\+$'
-		let s:pattern = a:key ==# "\<BS>" ? s:pattern[:-2] : s:pattern . a:key
-		call s:update_text(a:winid, old_pattern, s:pattern)
+	if a:key == "\<BS>" || a:key =~ '^[a-z0-9_._\|\ ]\+$'
+		let s:pattern = a:key == "\<BS>" ? s:pattern[:-2] : s:pattern . a:key
+		call s:debounce_update(a:winid, s:pattern, 0)
 		return 1
 
-	elseif a:key ==# "\<c-j>"
-		call win_execute(a:winid, 'normal! j')
-		return 1
+	elseif a:key == "\<c-j>"
+		return popup_filter_menu(a:winid, 'j')
 
-	elseif a:key ==# "\<c-k>"
-		call win_execute(a:winid, 'normal! k')
-		return 1
+	elseif a:key == "\<c-k>"
+		return popup_filter_menu(a:winid, 'k')
 
-	elseif a:key ==# "\<c-f>"
+	elseif a:key == "\<c-f>"
 		call win_execute(a:winid, 'normal! 18j')
 		return 1
 
-	elseif a:key ==# "\<c-b>"
+	elseif a:key == "\<c-b>"
 		call win_execute(a:winid, 'normal! 18k')
 		return 1
 
-	elseif a:key ==# "\<c-u>"
+	elseif a:key == "\<c-u>"
 		let s:pattern = ""
-		call s:update_text(a:winid, "dummy", s:pattern)
+		call s:update_text(a:winid, s:pattern, 1)
 		return 1
 
-	elseif a:key ==# "\<c-l>"
+	elseif a:key == "\<c-l>"
 		if s:filefinder != 1 | return 1 | endif
 		let s:pattern = ""
 		call s:listup_cache_file()
-		call s:update_text(a:winid, "dummy", "")
+		call s:update_text(a:winid, "", 1)
 		return 1
 
-	elseif a:key ==# "\<DEL>"
+	elseif a:key == "\<DEL>"
 		if s:filefinder != 3 | return 1 | endif
 		let s:pattern = ""
 		call s:delete_cache_file(a:winid)
 		call s:listup_cache_file()
-		call s:update_text(a:winid, "dummy", "")
+		call s:update_text(a:winid, "", 1)
 		return 1
 
-	elseif a:key ==# "\<F5>" || a:key ==# "\<F6>"
+	elseif a:key == "\<F5>" || a:key == "\<F6>"
 		let s:pattern = ""
 		let s:hidden_file = a:key ==# "\<F5>" ? 0 : 1
 		call s:get_files(s:start_dir, 1)
-		call s:update_text(a:winid, "dummy", s:pattern)
+		call s:update_text(a:winid, s:pattern, 1)
 		return 1
 
-	elseif a:key ==# "\<ESC>"
+	elseif a:key == "\<ESC>"
+		if s:timer_id != 0 | call timer_stop(s:timer_id) | endif
 		call popup_close(a:winid, -1)
 		return -1
 	endif
