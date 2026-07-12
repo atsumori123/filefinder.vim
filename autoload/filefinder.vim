@@ -146,7 +146,7 @@ endfunction
 "---------------------------------------------------------------
 " キャッシュファイルの一覧を取得
 "---------------------------------------------------------------
-function! s:listup_cache_files() abort
+function! s:get_cache_files() abort
 	let s:FILES = []
 	for v in readdir(s:get_cashe_directory())
 	    " 先頭のドライブ名の % を : に戻す
@@ -156,24 +156,6 @@ function! s:listup_cache_files() abort
 
 		call add(s:FILES, s)
 	endfor
-endfunction
-
-"---------------------------------------------------------------
-" キャッシュファイルの削除
-"---------------------------------------------------------------
-function! s:delete_cache_file(win) abort
-	" 選択項目を取得
-	let file = trim(win_execute(a:win, 'echo getline(".")'))
-
-	" 区切り文字を%に変換
-	let cache_file = substitute(file, '\([\/]\|^\a\zs:\)', '%', 'g')
-
-	" 削除
-	if delete(s:get_cashe_directory() . '/' . cache_file, '') < 0
-		echo "\rCannot delete file: " . file
-	else
-		echo "\rDeleted file: ". file
-	endif
 endfunction
 
 "---------------------------------------------------------------
@@ -221,8 +203,6 @@ endfunction
 " Selected handler
 "---------------------------------------------------------------
 function! s:on_select(win, result) abort
-	unlet s:FILES
-
 	" <ESC>の場合、終了
 	if a:result == -1 | return | endif
 
@@ -242,12 +222,16 @@ function! s:on_select(win, result) abort
 		return
 	endif
 
+	if has("nvim") | call nvim_win_close(0, 1) | endif
+
 	let winnum = bufwinnr('^' . filepath . '$')
 	if winnum != -1
 		exe winnum . 'wincmd w'
 	else
 		exe "edit " filepath
 	endif
+
+	unlet s:FILES
 endfunction
 
 "-------------------------------------------------------
@@ -271,9 +255,15 @@ function! s:update_text(win, new_pattern) abort
 	endif
 
 	" タイトルとメニューを更新
-	call popup_setoptions(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
-	call popup_settext(a:win, files)
-	call win_execute(a:win, 'call cursor(1, 1)')
+	if has("nvim")
+		call nvim_win_set_config(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
+		call nvim_buf_set_text(0, 0, 0, -1, -1, files)
+		call nvim_win_set_cursor(0, [1, 0])
+	else
+		call popup_setoptions(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
+		call popup_settext(a:win, files)
+		call win_execute(a:win, 'call cursor(1, 1)')
+	endif
 
 	" oldfiles用ハイライト
 	if s:is_mode("O")
@@ -291,6 +281,48 @@ function! s:update_text(win, new_pattern) abort
 endfunction
 
 "---------------------------------------------------------------
+" reload
+"---------------------------------------------------------------
+function! s:reload_files(win) abort
+	if s:is_mode("F")
+		call s:get_files(s:start_dir, 1)
+		call s:update_text(a:win, "")
+	endif
+endfunction
+
+"---------------------------------------------------------------
+" キャッシュファイルの一覧表示
+"---------------------------------------------------------------
+function! s:listup_cache_files(win) abort
+	if s:is_mode("F")
+		call s:init("C")
+		call s:get_cache_files()
+		call s:update_text(a:win, "")
+	endif
+endfunction
+
+"---------------------------------------------------------------
+" キャッシュファイルの削除
+"---------------------------------------------------------------
+function! s:delete_cache_file(win) abort
+	if !s:is_mode("C") | return | endif
+
+	" 選択項目を取得
+	let file = trim(win_execute(a:win, 'echo getline(".")'))
+
+	" 区切り文字を%に変換
+	let cache_file = substitute(file, '\([\/]\|^\a\zs:\)', '%', 'g')
+
+	" 削除
+	if delete(s:get_cashe_directory() . '/' . cache_file, '') < 0
+		echo "\rCannot delete file: " . file
+	else
+		echo "\rDeleted file: ". file
+		call win_execute(a:win, 'normal! dd')
+	endif
+endfunction
+
+"---------------------------------------------------------------
 " debounce update
 "---------------------------------------------------------------
 function! s:debounce_update(win, key)
@@ -304,8 +336,8 @@ function! s:debounce_update(win, key)
 
 	" タイマーが動いていたら停止
 	if s:timer_id != 0 | call timer_stop(s:timer_id) | endif
-	" 150ms 入力が止まったら実行
-	let s:timer_id = timer_start(150, {-> s:update_text(a:win, s:pattern)})
+	" 100ms 入力が止まったら実行
+	let s:timer_id = timer_start(100, {-> s:update_text(a:win, s:pattern)})
 endfunction
 
 "---------------------------------------------------------------
@@ -339,32 +371,78 @@ function! s:popup_filter(win, key) abort
 		return 1
 
 	elseif a:key == "\<c-l>"
-		if s:is_mode("F")
-			call s:init("C")
-			call s:listup_cache_files()
-			call s:update_text(a:win, "")
-		endif
+		call s:listup_cache_files(a:win)
 		return 1
 
 	elseif a:key == "\<DEL>"
-		if s:is_mode("C")
-			call s:delete_cache_file(a:win)
-			call s:listup_cache_files()
-			call s:update_text(a:win, "")
-		endif
+		call s:delete_cache_file(a:win)
 		return 1
 
 	elseif a:key == "\<F5>"
-		if s:is_mode("F")
-			call s:get_files(s:start_dir, 1)
-			call s:update_text(a:win, "")
-		endif
+		call s:reload_files(a:win)
 		return 1
 	endif
 
 	return popup_filter_menu(a:win, a:key)
 endfunction
 
+if has('nvim')
+"-------------------------------------------------------
+" ポップアップメニュー起動
+"-------------------------------------------------------
+function! s:open_popup() abort
+	" バッファを作成 (listed=false, scratch(使い捨て)=true)
+	let buf = nvim_create_buf(v:false, v:true)
+
+	" create floating window
+	let win = nvim_open_win(buf, v:true, {
+						\ "title"	: printf(" > [%s:%d]", s:start_dir, len(s:FILES)),
+						\ "style"	: "minimal",
+						\ "relative": "editor",
+						\ "height"	: 20,
+						\ "width"	: float2nr(&columns * 3 / 4),
+						\ "col"		: float2nr((&columns - 80) * 0.5 - 1),
+						\ "row"		: float2nr((&lines - 20) * 0.5 -1),
+						\ "border"	: "rounded",
+						\ })
+
+	" 変更禁止解除→描画
+	setlocal modifiable
+	call nvim_buf_set_lines(0, 0, -1, v:false, s:FILES)
+
+	" カーソルを先頭に設定
+	call nvim_win_set_cursor(0, [1, 0])
+
+	" set buffer option
+	setlocal bufhidden=wipe
+	setlocal noswapfile
+	setlocal nowrap
+	setlocal cursorline
+
+	" フォーカスが外れたら自動で閉じる(winid=0(現在のウィンドウ), force=1)
+	autocmd WinLeave <buffer> ++once call nvim_win_close(0, 1)
+
+	" 必要な文字を一括登録
+	let keys = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.|"
+	for i in range(0, len(keys) - 1)
+		let k = escape(keys[i], '|')
+		execute printf('nnoremap <buffer> <silent> %s :call <SID>debounce_update(%d, "%s")<CR>', k, win, k)
+	endfor
+
+	nnoremap <buffer> <silent> <c-j> j
+	nnoremap <buffer> <silent> <c-k> k
+	execute printf("nnoremap <buffer> <silent> <nowait> <ESC> :call nvim_win_close(0, v:true)<CR>")
+	execute printf('nnoremap <buffer> <silent> <CR>  :call <SID>on_select(%d, 1)<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <BS>  :call <SID>debounce_update(%d, "BS")<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <F5>  :call <SID>reload_files(%d)<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <c-u> :call <SID>debounce_update(%d, "CLR")<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <c-l> :call <SID>listup_cache_files(%d)<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <DEL> :call <SID>delete_cache_file(%d)<CR>', win)
+
+	return win
+endfunction
+
+else
 "---------------------------------------------------------------
 " Open popup window
 "---------------------------------------------------------------
@@ -387,6 +465,7 @@ function! s:open_popup() abort
 
 	return popup_menu(s:FILES, opts)
 endfunction
+endif
 
 "---------------------------------------------------------------
 " filefinder#start
@@ -405,7 +484,8 @@ function! filefinder#start_files(...) abort
 	if empty(start_dir) || !isdirectory(start_dir)
 		" キャッシュファイルが存在しない場合は選択画面を表示する
 		echohl Error | echomsg "Could not set the starting directory. Select a cache file." | echohl None
-		call s:listup_cache_file()
+		call s:init("C")
+		call s:get_cache_files()
 		let win = s:open_popup()
 		return
 	endif
@@ -446,7 +526,7 @@ function! filefinder#add_oldfile(bufnr) abort
 	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
 
 	" Get the full path to the filename
-	let file = fnamemodify(bufname(a:bufnr), ':p')
+	let file = fnamemodify(bufname(a:bufnr + 0), ':p')
 
 	" 以下に該当する場合は履歴に追加しない
 	" プレビュー、ファイル名が空、特殊バッファ、リードオンリー
