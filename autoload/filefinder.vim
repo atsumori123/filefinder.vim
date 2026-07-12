@@ -5,14 +5,27 @@ set cpo&vim
 "---------------------------------------------------------------
 " 初期化処理
 "---------------------------------------------------------------
-function! s:init() abort
-	let s:pattern = ""
-	let s:old_pattern = ""
-	let s:start_dir = ""
-	let s:filefinder = 0
-	let s:timer_id = 0
+function! s:init(mode) abort
+	let s:pattern		= ""
+	let s:old_pattern	= ""
+	let s:filefinder	= a:mode
 
-	set shellslash
+	if a:mode == "F"
+		let s:start_dir = ""
+	elseif a:mode == "C"
+		let s:start_dir = "cache files"
+	elseif a:mode == "O"
+		let s:start_dir = "oldfiles"
+	endif
+
+	if exists('s:timer_id') && s:timer_id
+		call timer_stop(s:timer_id)
+	endif
+	let s:timer_id = 0
+endfunction
+
+function! s:is_mode(mode) abort
+	return s:filefinder == a:mode ? 1 : 0
 endfunction
 
 "---------------------------------------------------------------
@@ -133,10 +146,7 @@ endfunction
 "---------------------------------------------------------------
 " キャッシュファイルの一覧を取得
 "---------------------------------------------------------------
-function! s:listup_cache_file() abort
-	let s:filefinder = 3
-	let s:start_dir = "cache files"
-
+function! s:listup_cache_files() abort
 	let s:FILES = []
 	for v in readdir(s:get_cashe_directory())
 	    " 先頭のドライブ名の % を : に戻す
@@ -151,9 +161,9 @@ endfunction
 "---------------------------------------------------------------
 " キャッシュファイルの削除
 "---------------------------------------------------------------
-function! s:delete_cache_file(winid) abort
+function! s:delete_cache_file(win) abort
 	" 選択項目を取得
-	let file = trim(win_execute(a:winid, 'echo getline(".")'))
+	let file = trim(win_execute(a:win, 'echo getline(".")'))
 
 	" 区切り文字を%に変換
 	let cache_file = substitute(file, '\([\/]\|^\a\zs:\)', '%', 'g')
@@ -210,19 +220,19 @@ endfunction
 "---------------------------------------------------------------
 " Selected handler
 "---------------------------------------------------------------
-function! s:on_select(winid, result) abort
+function! s:on_select(win, result) abort
 	unlet s:FILES
 
 	" <ESC>の場合、終了
 	if a:result == -1 | return | endif
 
 	" 選択項目を取得
-	let file = trim(win_execute(a:winid, 'echo getline(".")'))
+	let file = trim(win_execute(a:win, 'echo getline(".")'))
 
-	if s:filefinder == 1		" filefinderの場合
+	if s:is_mode("F")			" filefinderの場合
 		" 相対パスを絶対パスに変換
 		let filepath = printf("%s/%s", s:start_dir, s:escape_filename(file))
-	elseif s:filefinder == 2	" oldfilesの場合
+	elseif s:is_mode("O")		" oldfilesの場合
 		" 絶対パスの部分を抽出
 		let filepath = matchstr(file, '(\zs.*\ze)')
 	else						" キャッシュファイル表示の場合
@@ -243,115 +253,116 @@ endfunction
 "-------------------------------------------------------
 " Update popup menu
 "-------------------------------------------------------
-function! s:update_text(winid, pattern, force) abort
-	let [old_len, new_len] = [len(s:old_pattern), len(a:pattern)]
-
-	" フィルタリングパターンに変化が無い場合は処理なし
-	if (old_len == new_len) && !a:force | return | endif
-
+function! s:update_text(win, new_pattern) abort
 	" ハイライトを全クリア
-	call clearmatches(a:winid)
+	call clearmatches(a:win)
 
 	" ファイルリストを取得
-	let files = copy(old_len < new_len ? getbufline(winbufnr(a:winid), 1, '$') : s:FILES)
+	let f = (len(s:old_pattern) <= len(a:new_pattern)) && stridx(a:new_pattern, s:old_pattern, 0) == 0 ? 1 : 0
+	let files = copy(f ? getbufline(winbufnr(a:win), 1, '$') : s:FILES)
 
 	" フィルタリングの条件式を作成
-	if len(a:pattern)
+	if len(a:new_pattern)
 		let cond = ""
-		for v in split(a:pattern, "|")
+		for v in split(a:new_pattern, "|")
 			let cond .= printf("%sv:val %s '%s'", (len(cond) ? " && " : ""), (v =~# '[A-Z]' ? '=~#' : '=~?'), escape(v, '.'))
 		endfor
 		call filter(files, cond)
 	endif
 
-	" タイトルの更新
-	call popup_setoptions(a:winid, {'title' : printf(" > %s%s[%s:%d] ", a:pattern, len(a:pattern) ? " " : "", s:start_dir, len(files))})
-	
-	" 表示の更新
-	call popup_settext(a:winid, files)
+	" タイトルとメニューを更新
+	call popup_setoptions(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
+	call popup_settext(a:win, files)
+	call win_execute(a:win, 'call cursor(1, 1)')
 
 	" oldfiles用ハイライト
-	if s:filefinder == 2
-		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:winid})
+	if s:is_mode("O")
+		call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': a:win})
 	endif
 
 	" フィルタリングパターンをハイライト
-	if len(a:pattern)
-		for v in split(a:pattern, "|")
-			call matchadd('Title', (v =~# '[A-Z]' ? '' : '\c') . v, 10, -1, {'window': a:winid})
+	if len(a:new_pattern)
+		for v in split(a:new_pattern, "|")
+			call matchadd('Title', (v =~# '[A-Z]' ? '' : '\c') . v, 10, -1, {'window': a:win})
 		endfor
 	endif
 
-	let s:old_pattern = a:pattern
+	let s:old_pattern = a:new_pattern
 endfunction
 
 "---------------------------------------------------------------
 " debounce update
 "---------------------------------------------------------------
-function! s:debounce_update(winid, pattern, force)
+function! s:debounce_update(win, key)
+	if a:key == "BS"
+		let s:pattern = s:pattern[:-2]
+	elseif a:key == "CLR"
+		let s:pattern = ""
+	else
+		let s:pattern .= a:key
+	endif
+
 	" タイマーが動いていたら停止
 	if s:timer_id != 0 | call timer_stop(s:timer_id) | endif
 	" 150ms 入力が止まったら実行
-	let s:timer_id = timer_start(150, {-> s:update_text(a:winid, a:pattern, a:force)})
+	let s:timer_id = timer_start(150, {-> s:update_text(a:win, s:pattern)})
 endfunction
 
 "---------------------------------------------------------------
 " popup filter
 "---------------------------------------------------------------
-function! s:popup_filter(winid, key) abort
-	if a:key == "\<BS>" || a:key =~ '^[a-z0-9_._\|\ ]\+$'
-		let s:pattern = a:key == "\<BS>" ? s:pattern[:-2] : s:pattern . a:key
-		call s:debounce_update(a:winid, s:pattern, 0)
+function! s:popup_filter(win, key) abort
+	if a:key =~ '^[a-z0-9_._\|\ ]\+$'
+		call s:debounce_update(a:win, a:key)
+		return 1
+
+	elseif a:key == "\<BS>"
+		call s:debounce_update(a:win, "BS")
 		return 1
 
 	elseif a:key == "\<c-j>"
-		return popup_filter_menu(a:winid, 'j')
+		return popup_filter_menu(a:win, 'j')
 
 	elseif a:key == "\<c-k>"
-		return popup_filter_menu(a:winid, 'k')
+		return popup_filter_menu(a:win, 'k')
 
 	elseif a:key == "\<c-f>"
-		call win_execute(a:winid, 'normal! 18j')
+		call win_execute(a:win, 'normal! 18j')
 		return 1
 
 	elseif a:key == "\<c-b>"
-		call win_execute(a:winid, 'normal! 18k')
+		call win_execute(a:win, 'normal! 18k')
 		return 1
 
 	elseif a:key == "\<c-u>"
-		let s:pattern = ""
-		call s:update_text(a:winid, s:pattern, 1)
+		call s:debounce_update(a:win, "CLR")
 		return 1
 
 	elseif a:key == "\<c-l>"
-		if s:filefinder != 1 | return 1 | endif
-		let s:pattern = ""
-		call s:listup_cache_file()
-		call s:update_text(a:winid, "", 1)
+		if s:is_mode("F")
+			call s:init("C")
+			call s:listup_cache_files()
+			call s:update_text(a:win, "")
+		endif
 		return 1
 
 	elseif a:key == "\<DEL>"
-		if s:filefinder != 3 | return 1 | endif
-		let s:pattern = ""
-		call s:delete_cache_file(a:winid)
-		call s:listup_cache_file()
-		call s:update_text(a:winid, "", 1)
+		if s:is_mode("C")
+			call s:delete_cache_file(a:win)
+			call s:listup_cache_files()
+			call s:update_text(a:win, "")
+		endif
 		return 1
 
-	elseif a:key == "\<F5>" || a:key == "\<F6>"
-		let s:pattern = ""
-		let s:hidden_file = a:key ==# "\<F5>" ? 0 : 1
-		call s:get_files(s:start_dir, 1)
-		call s:update_text(a:winid, s:pattern, 1)
+	elseif a:key == "\<F5>"
+		if s:is_mode("F")
+			call s:get_files(s:start_dir, 1)
+			call s:update_text(a:win, "")
+		endif
 		return 1
-
-	elseif a:key == "\<ESC>"
-		if s:timer_id != 0 | call timer_stop(s:timer_id) | endif
-		call popup_close(a:winid, -1)
-		return -1
 	endif
 
-	return popup_filter_menu(a:winid, a:key)
+	return popup_filter_menu(a:win, a:key)
 endfunction
 
 "---------------------------------------------------------------
@@ -381,15 +392,13 @@ endfunction
 " filefinder#start
 "---------------------------------------------------------------
 function! filefinder#start_files(...) abort
-	call s:init()
-	let s:filefinder = 1
+	call s:init("F")
 
 	" 開始ディレクトリを決定する
 	if len(a:000) && !empty(a:000[0])
 		let start_dir = resolve(a:000[0])
 	else
 		" 引数がない場合のデフォルト処理
-		let s:hidden_file = 0
 		let start_dir = s:get_higher_level_directory(resolve(s:get_git_root(expand('%:p:h'))))
 	endif
 
@@ -397,7 +406,7 @@ function! filefinder#start_files(...) abort
 		" キャッシュファイルが存在しない場合は選択画面を表示する
 		echohl Error | echomsg "Could not set the starting directory. Select a cache file." | echohl None
 		call s:listup_cache_file()
-		let winid = s:open_popup()
+		let win = s:open_popup()
 		return
 	endif
 
@@ -408,16 +417,14 @@ function! filefinder#start_files(...) abort
 	call s:get_files(s:start_dir, 0)
 
 	" ポップアップウィンドウで表示
-	let winid = s:open_popup()
+	let win = s:open_popup()
 endfunction
 
 "---------------------------------------------------------------
 " filefinder#start
 "---------------------------------------------------------------
 function! filefinder#start_oldfiles() abort
-	call s:init()
-	let s:filefinder = 2
-	let s:start_dir = "oldfiles"
+	call s:init("O")
 
 	" ファイル履歴が未ロードでの場合は、vimのoldfilesから取得する
 	if !exists('s:OldFiles') | call s:load_oldfiles() | endif
@@ -426,10 +433,10 @@ function! filefinder#start_oldfiles() abort
 	let s:FILES = map(copy(s:OldFiles), 'fnamemodify(v:val, ":t")."  (" . v:val . ")"')
 
 	" ポップアップウィンドウで表示
-	let winid = s:open_popup()
+	let win = s:open_popup()
 
 	" 各行先頭のファイル名の部分をハイライト
-	call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': winid})
+	call matchadd('Identifier', '^.\{-}\ze(', 10, -1, {'window': win})
 endfunction
 
 "---------------------------------------------------------------
