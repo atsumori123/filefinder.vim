@@ -156,6 +156,7 @@ function! s:get_cache_files() abort
 
 		call add(s:FILES, s)
 	endfor
+	let s:FILES_WORK = copy(s:FILES)
 endfunction
 
 "---------------------------------------------------------------
@@ -197,17 +198,22 @@ function! s:get_files(start_dir, force) abort
 		" キャッシュファイルから読み込む
 		let s:FILES = readfile(cache_file)
 	endif
+	let s:FILES_WORK = copy(s:FILES)
 endfunction
 
 "---------------------------------------------------------------
 " Selected handler
 "---------------------------------------------------------------
 function! s:on_select(win, result) abort
-	" <ESC>の場合、終了
-	if a:result == -1 | return | endif
-
 	" 選択項目を取得
 	let file = trim(win_execute(a:win, 'echo getline(".")'))
+
+	" 解放
+	unlet s:FILES
+	unlet s:FILES_WORK
+
+	" <ESC>の場合、終了
+	if a:result == -1 | return | endif
 
 	if s:is_mode("F")			" filefinderの場合
 		" 相対パスを絶対パスに変換
@@ -230,8 +236,6 @@ function! s:on_select(win, result) abort
 	else
 		exe "edit " filepath
 	endif
-
-	unlet s:FILES
 endfunction
 
 "-------------------------------------------------------
@@ -243,7 +247,7 @@ function! s:update_text(win, new_pattern) abort
 
 	" ファイルリストを取得
 	let f = (len(s:old_pattern) <= len(a:new_pattern)) && stridx(a:new_pattern, s:old_pattern, 0) == 0 ? 1 : 0
-	let files = copy(f ? getbufline(winbufnr(a:win), 1, '$') : s:FILES)
+	if !f | let s:FILES_WORK = copy(s:FILES) | endif
 
 	" フィルタリングの条件式を作成
 	if len(a:new_pattern)
@@ -251,17 +255,17 @@ function! s:update_text(win, new_pattern) abort
 		for v in split(a:new_pattern, "|")
 			let cond .= printf("%sv:val %s '%s'", (len(cond) ? " && " : ""), (v =~# '[A-Z]' ? '=~#' : '=~?'), escape(v, '.'))
 		endfor
-		call filter(files, cond)
+		call filter(s:FILES_WORK, cond)
 	endif
 
 	" タイトルとメニューを更新
 	if has("nvim")
-		call nvim_win_set_config(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
-		call nvim_buf_set_text(0, 0, 0, -1, -1, files)
+		call nvim_win_set_config(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(s:FILES_WORK))})
+		call nvim_buf_set_text(0, 0, 0, -1, -1, s:FILES_WORK[:200])
 		call nvim_win_set_cursor(0, [1, 0])
 	else
-		call popup_setoptions(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(files))})
-		call popup_settext(a:win, files)
+		call popup_setoptions(a:win, {'title' : printf(" > %s%s[%s:%d] ", a:new_pattern, len(a:new_pattern) ? " " : "", s:start_dir, len(s:FILES_WORK))})
+		call popup_settext(a:win, s:FILES_WORK[:200])
 		call win_execute(a:win, 'call cursor(1, 1)')
 	endif
 
@@ -395,20 +399,22 @@ function! s:open_popup() abort
 	let buf = nvim_create_buf(v:false, v:true)
 
 	" create floating window
+	let width = float2nr(&columns * 3 / 4)
+	let height = 20
 	let win = nvim_open_win(buf, v:true, {
-						\ "title"	: printf(" > [%s:%d]", s:start_dir, len(s:FILES)),
+						\ "title"	: printf(" > [%s:%d]", s:start_dir, len(s:FILES_WORK)),
 						\ "style"	: "minimal",
 						\ "relative": "editor",
-						\ "height"	: 20,
-						\ "width"	: float2nr(&columns * 3 / 4),
-						\ "col"		: float2nr((&columns - 80) * 0.5 - 1),
-						\ "row"		: float2nr((&lines - 20) * 0.5 -1),
+						\ "height"	: height,
+						\ "width"	: width,
+						\ "col"		: float2nr((&columns - width) * 0.5 - 1),
+						\ "row"		: float2nr((&lines - height) * 0.5 -1),
 						\ "border"	: "rounded",
 						\ })
 
 	" 変更禁止解除→描画
 	setlocal modifiable
-	call nvim_buf_set_lines(0, 0, -1, v:false, s:FILES)
+	call nvim_buf_set_lines(0, 0, -1, v:false, s:FILES_WORK[:200])
 
 	" カーソルを先頭に設定
 	call nvim_win_set_cursor(0, [1, 0])
@@ -448,7 +454,7 @@ else
 "---------------------------------------------------------------
 function! s:open_popup() abort
 	let opts = {
-			\ 'title':			printf(" > [%s:%d]", s:start_dir, len(s:FILES)),
+			\ 'title':			printf(" > [%s:%d]", s:start_dir, len(s:FILES_WORK)),
 			\ 'border':			[1,1,1,1],
 			\ 'borderchars':	has('unix') ? [] : ['─','│','─','│','┌','┐','┘','└'],
 			\ 'padding':		[1,2,1,2],
@@ -463,7 +469,7 @@ function! s:open_popup() abort
 			\ 'filter':			function('s:popup_filter')
 			\ }
 
-	return popup_menu(s:FILES, opts)
+	return popup_menu(s:FILES_WORK[:200], opts)
 endfunction
 endif
 
@@ -511,6 +517,7 @@ function! filefinder#start_oldfiles() abort
 
 	" 表示形式に変換
 	let s:FILES = map(copy(s:OldFiles), 'fnamemodify(v:val, ":t")."  (" . v:val . ")"')
+	let s:FILES_WORK = copy(s:FILES)
 
 	" ポップアップウィンドウで表示
 	let win = s:open_popup()
