@@ -202,6 +202,36 @@ function! s:get_files(start_dir, force) abort
 endfunction
 
 "---------------------------------------------------------------
+" 通常バッファを表示しているウィンドウにスイッチ
+"---------------------------------------------------------------
+function! s:switch_normal_window() abort
+	" カレントウィンドウが通常バッファを表示しているか
+	if getbufvar('%', '&buftype') ==# ''
+		return 1
+	endif
+
+	" ウィンドウリストを作成
+	let current_win	= winnr()
+	let last_win	= winnr("#")
+	let list		= last_win ? [last_win] : []
+	for i in range(1, winnr('$'))
+		if i != current_win && i != last_win
+			call add(list, i)
+		endif
+	endfor
+
+	" 特殊バッファを表示しているウィンドウは除外
+	call filter(list, 'getbufvar(winbufnr(v:val), "&buftype") ==# ""')
+
+	if len(list)
+		silent! exe list[0] . 'wincmd w'
+		return 1
+	endif
+
+	return 0
+endfunction
+
+"---------------------------------------------------------------
 " Selected handler
 "---------------------------------------------------------------
 function! s:on_select(win, result) abort
@@ -232,8 +262,13 @@ function! s:on_select(win, result) abort
 
 	let winnum = bufwinnr('^' . filepath . '$')
 	if winnum != -1
+		" ターゲットバッファを開いているウィンドウがある
 		exe winnum . 'wincmd w'
+	elseif s:switch_normal_window() == 0
+		" 通常バッファを表示しているウィンドウが無い
+		echohl Error | echomsg "Can not open because normal window does not exits." | echohl None
 	else
+		" 上記以外
 		exe "edit " filepath
 	endif
 endfunction
@@ -444,6 +479,7 @@ function! s:open_popup() abort
 	execute printf('nnoremap <buffer> <silent> <c-u> :call <SID>debounce_update(%d, "CLR")<CR>', win)
 	execute printf('nnoremap <buffer> <silent> <c-l> :call <SID>listup_cache_files(%d)<CR>', win)
 	execute printf('nnoremap <buffer> <silent> <DEL> :call <SID>delete_cache_file(%d)<CR>', win)
+	execute printf('nnoremap <buffer> <silent> <c-c> :call nvim_win_close(0, v:true)<CR>')
 
 	return win
 endfunction
